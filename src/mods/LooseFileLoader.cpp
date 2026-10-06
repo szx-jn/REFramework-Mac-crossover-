@@ -4,6 +4,7 @@
 #include <utility/Module.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include "REFramework.hpp"
 
 #include <spdlog/sinks/basic_file_sink.h>
@@ -91,6 +92,9 @@ void LooseFileLoader::on_draw_ui() {
     if (m_hook_success) {
         ImGui::TextWrapped("Files encountered: %d", m_files_encountered);
         ImGui::TextWrapped("Loose files loaded: %d", m_loose_files_loaded);
+        ImGui::TextWrapped("path_to_hash Hook calls: %llu", static_cast<unsigned long long>(m_path_hook_calls.load()));
+        ImGui::TextWrapped("path_to_hash original calls: %llu", static_cast<unsigned long long>(m_path_hook_original_calls.load()));
+        ImGui::TextWrapped("path_to_hash loose hits: %llu", static_cast<unsigned long long>(m_path_hook_loose_hits.load()));
 
         if (ImGui::Button("Clear stats")) {
             m_files_encountered = 0;
@@ -468,7 +472,22 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
 
     const auto enabled = m_enabled->value();
 
-    //spdlog::info("[LooseFileLoader] path_to_hash_hook called with path: {}", utility::narrow(path));
+    if (m_path_hook_calls.load(std::memory_order_relaxed) <= 64) {
+        if (path != nullptr && path[0] != L'\\0') {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] handle_path path={} hash=0x{:016X} enabled={}",
+                utility::narrow(path),
+                static_cast<uint64_t>(hash),
+                enabled ? 1 : 0
+            );
+        } else {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] handle_path path=<null-or-empty> hash=0x{:016X} enabled={}",
+                static_cast<uint64_t>(hash),
+                enabled ? 1 : 0
+            );
+        }
+    }
 
     if (enabled) {
         bool exists_in_cache{false};
@@ -537,21 +556,97 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
 }
 
 uint64_t LooseFileLoader::path_to_hash_hook(const wchar_t* path) {
-    const auto og = g_loose_file_loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook)>();
-    const auto result = og(path);
+    auto* loader = g_loose_file_loader;
+    if (loader == nullptr) {
+        return 0;
+    }
 
-    if (g_loose_file_loader->handle_path(path, result)) {
+    const auto call_no = loader->m_path_hook_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool diagnostic_log = call_no <= 64;
+
+    if (diagnostic_log) {
+        if (path != nullptr && path[0] != L'\\0') {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] path_to_hash ENTER #{} enabled={} path={}",
+                call_no,
+                loader->m_enabled->value() ? 1 : 0,
+                utility::narrow(path)
+            );
+        } else {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] path_to_hash ENTER #{} enabled={} path=<null-or-empty>",
+                call_no,
+                loader->m_enabled->value() ? 1 : 0
+            );
+        }
+    }
+
+    const auto og = loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook)>();
+    const auto result = og(path);
+    loader->m_path_hook_original_calls.fetch_add(1, std::memory_order_relaxed);
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] path_to_hash ORIGINAL_RETURN #{} hash=0x{:016X}",
+            call_no,
+            static_cast<uint64_t>(result)
+        );
+    }
+
+    const auto loose = loader->handle_path(path, result);
+
+    if (loose) {
+        const auto loose_no = loader->m_path_hook_loose_hits.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        if (diagnostic_log) {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] LOOSE_HIT #{} call={} path={}",
+                loose_no,
+                call_no,
+                (path != nullptr && path[0] != L'\\0') ? utility::narrow(path) : std::string{"<null-or-empty>"}
+            );
+        }
+
         return 4294967296;
+    }
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] path_to_hash EXIT #{} vanilla_path_kept=1",
+            call_no
+        );
     }
 
     return result;
 }
 
 uint64_t LooseFileLoader::path_to_hash_hook_legacy(void* This, const wchar_t* path) {
-    const auto og = g_loose_file_loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook_legacy)>();
-    const auto result = og(This, path);
+    auto* loader = g_loose_file_loader;
+    if (loader == nullptr) {
+        return 0;
+    }
 
-    if (g_loose_file_loader->handle_path(path, result)) {
+    const auto call_no = loader->m_path_hook_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool diagnostic_log = call_no <= 64;
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] legacy path_to_hash ENTER #{}",
+            call_no
+        );
+    }
+
+    const auto og = loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook_legacy)>();
+    const auto result = og(This, path);
+    loader->m_path_hook_original_calls.fetch_add(1, std::memory_order_relaxed);
+
+    const auto loose = loader->handle_path(path, result);
+
+    if (loose) {
+        loader->m_path_hook_loose_hits.fetch_add(1, std::memory_order_relaxed);
+        if (diagnostic_log) {
+            spdlog::info("[LooseFileLoader][RE9-DIAG] legacy LOOSE_HIT #{}", call_no);
+        }
         return 0xFFFFFFFF;
     }
 
