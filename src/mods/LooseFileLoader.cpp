@@ -473,7 +473,7 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
     const auto enabled = m_enabled->value();
 
     if (m_path_hook_calls.load(std::memory_order_relaxed) <= 64) {
-        if (path != nullptr && path[0] != L'\\0') {
+        if (path != nullptr && path[0] != L'\0') {
             spdlog::info(
                 "[LooseFileLoader][RE9-DIAG] handle_path path={} hash=0x{:016X} enabled={}",
                 utility::narrow(path),
@@ -565,7 +565,7 @@ uint64_t LooseFileLoader::path_to_hash_hook(const wchar_t* path) {
     const bool diagnostic_log = call_no <= 64;
 
     if (diagnostic_log) {
-        if (path != nullptr && path[0] != L'\\0') {
+        if (path != nullptr && path[0] != L'\0') {
             spdlog::info(
                 "[LooseFileLoader][RE9-DIAG] path_to_hash ENTER #{} enabled={} path={}",
                 call_no,
@@ -603,7 +603,7 @@ uint64_t LooseFileLoader::path_to_hash_hook(const wchar_t* path) {
                 "[LooseFileLoader][RE9-DIAG] LOOSE_HIT #{} call={} path={}",
                 loose_no,
                 call_no,
-                (path != nullptr && path[0] != L'\\0') ? utility::narrow(path) : std::string{"<null-or-empty>"}
+                (path != nullptr && path[0] != L'\0') ? utility::narrow(path) : std::string{"<null-or-empty>"}
             );
         }
 
