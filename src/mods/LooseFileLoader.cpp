@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <windows.h>
 #include "REFramework.hpp"
 
 #include <spdlog/sinks/basic_file_sink.h>
@@ -422,12 +423,30 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
 }
 
 bool safe_exists(const wchar_t* path) try {
+    if (path == nullptr || path[0] == L'\\0') {
+        return false;
+    }
+
+    // Wine/CrossOver uses the Win32 file APIs as the canonical view of the
+    // bottle filesystem. Prefer GetFileAttributesW before std::filesystem so
+    // a valid C:\\RE9\\natives path is not rejected by a CRT/path adapter.
+    const auto attributes = GetFileAttributesW(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return true;
+    }
+
+    const auto last_error = GetLastError();
+
     if (resolve_crossover_loose_path(path).has_value()) {
         return true;
     }
 
     if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
-        spdlog::debug("[LooseFileLoader] File not found: {}", utility::narrow(path));
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] file not found path={} win32_error={}",
+            utility::narrow(path),
+            static_cast<unsigned long>(last_error)
+        );
         g_last_time_logged_safe_exists = std::chrono::steady_clock::now();
     }
     return false;
@@ -684,6 +703,58 @@ void LooseFileLoader::early_initialize() {
     // LooseTextureLoader only supports TDB >= 81 (MHWILDS+).
     if (sdk::GameIdentity::get().tdb_ver() >= 81) {
         hook();
+
+        if (sdk::GameIdentity::get().is_re9()) {
+            try {
+                const auto module_path = utility::get_module_path(utility::get_executable());
+                if (module_path) {
+                    const auto game_root = std::filesystem::path{*module_path}.parent_path();
+                    const auto natives_root = game_root / "natives";
+                    std::error_code ec{};
+                    const bool natives_exists = std::filesystem::exists(natives_root, ec);
+                    spdlog::info(
+                        "[LooseFileLoader][RE9-DIAG] natives root={} exists={} ec={}",
+                        natives_root.string(),
+                        natives_exists ? 1 : 0,
+                        ec ? ec.message() : "none"
+                    );
+
+                    if (natives_exists && !ec) {
+                        size_t sample_count = 0;
+                        std::error_code iter_ec{};
+                        std::filesystem::recursive_directory_iterator it{
+                            natives_root,
+                            std::filesystem::directory_options::skip_permission_denied,
+                            iter_ec
+                        };
+                        const std::filesystem::recursive_directory_iterator end{};
+                        for (; it != end && sample_count < 16; it.increment(iter_ec)) {
+                            if (iter_ec) {
+                                iter_ec.clear();
+                                continue;
+                            }
+                            if (it->is_regular_file(iter_ec)) {
+                                spdlog::info(
+                                    "[LooseFileLoader][RE9-DIAG] native sample[{}]={}",
+                                    sample_count,
+                                    it->path().string()
+                                );
+                                ++sample_count;
+                            }
+                        }
+                        spdlog::info(
+                            "[LooseFileLoader][RE9-DIAG] native sample count={}",
+                            sample_count
+                        );
+                    }
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("[LooseFileLoader][RE9-DIAG] natives root inspection failed: {}", e.what());
+            } catch (...) {
+                spdlog::error("[LooseFileLoader][RE9-DIAG] natives root inspection failed: unknown exception");
+            }
+        }
+
         m_texture_loader.early_initialize();
     }
 }
