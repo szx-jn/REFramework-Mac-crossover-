@@ -2,6 +2,8 @@
 #include <sdk/RETypeDB.hpp>
 #include <utility/Scan.hpp>
 #include <utility/Module.hpp>
+
+#include <algorithm>
 #include "REFramework.hpp"
 
 #include <spdlog/sinks/basic_file_sink.h>
