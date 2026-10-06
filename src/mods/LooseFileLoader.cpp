@@ -423,7 +423,7 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
 }
 
 bool safe_exists(const wchar_t* path) try {
-    if (path == nullptr || path[0] == L'\\0') {
+    if (path == nullptr || path[0] == L'\0') {
         return false;
     }
 
