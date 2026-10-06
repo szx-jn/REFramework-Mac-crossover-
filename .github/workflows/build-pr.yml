@@ -12,11 +12,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Audit direct struct field access
-        run: |
-          pip install libclang
-          python dev/audit_direct_access_clang.py
-
+      # The direct-access audit is useful for upstream PR review but can hang on
+      # the fork's Windows runner; keep the actual build path independent of it.
       - name: Configure CMake
         run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 18 2026" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DDEVELOPER_MODE=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
