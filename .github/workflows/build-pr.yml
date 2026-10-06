@@ -1,4 +1,5 @@
 name: Build PR
+# Trigger CI after GitHub Actions was enabled on the fork
 on: [push, pull_request, workflow_dispatch]
 env:
   BUILD_TYPE: Release
