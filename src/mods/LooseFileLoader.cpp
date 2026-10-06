@@ -326,8 +326,76 @@ void LooseFileLoader::hook() {
 
 static thread_local std::chrono::steady_clock::time_point g_last_time_logged_safe_exists{};
 
+static std::optional<std::filesystem::path> resolve_crossover_loose_path(const wchar_t* path) {
+    if (path == nullptr || path[0] == L'\\0') {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path direct{path};
+    try {
+        if (std::filesystem::exists(direct)) {
+            return direct;
+        }
+    } catch (...) {
+        // Try normalized game-relative forms below.
+    }
+
+    std::wstring normalized{path};
+    std::replace(normalized.begin(), normalized.end(), L'\\\\', L'/');
+
+    // Normalize common RE Engine / Windows forms. In particular, discard a
+    // Wine/Windows absolute prefix when the virtual resource contains natives/.
+    while (normalized.rfind(L"./", 0) == 0) {
+        normalized.erase(0, 2);
+    }
+
+    const auto natives_pos = normalized.find(L"natives/");
+    if (natives_pos != std::wstring::npos) {
+        normalized.erase(0, natives_pos);
+    } else {
+        while (!normalized.empty() && (normalized.front() == L'/' || normalized.front() == L'\\\\')) {
+            normalized.erase(normalized.begin());
+        }
+    }
+
+    if (normalized.empty()) {
+        return std::nullopt;
+    }
+
+    const auto game_dir = REFramework::get_persistent_dir();
+    const auto candidate = game_dir / std::filesystem::path{normalized};
+
+    try {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    } catch (...) {
+    }
+
+    // Some callers omit the natives/ prefix.
+    if (natives_pos == std::wstring::npos) {
+        const auto natives_candidate = game_dir / "natives" / std::filesystem::path{normalized};
+        try {
+            if (std::filesystem::exists(natives_candidate)) {
+                return natives_candidate;
+            }
+        } catch (...) {
+        }
+    }
+
+    return std::nullopt;
+}
+
 bool safe_exists(const wchar_t* path) try {
-    return std::filesystem::exists(path);
+    if (resolve_crossover_loose_path(path).has_value()) {
+        return true;
+    }
+
+    if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
+        spdlog::debug("[LooseFileLoader] File not found: {}", utility::narrow(path));
+        g_last_time_logged_safe_exists = std::chrono::steady_clock::now();
+    }
+    return false;
 } catch (const std::filesystem::filesystem_error& e) {
     if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
         spdlog::error("[LooseFileLoader] Filesystem error in safe_exists: {}", e.what());
