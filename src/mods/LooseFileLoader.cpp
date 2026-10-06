@@ -327,7 +327,7 @@ void LooseFileLoader::hook() {
 static thread_local std::chrono::steady_clock::time_point g_last_time_logged_safe_exists{};
 
 static std::optional<std::filesystem::path> resolve_crossover_loose_path(const wchar_t* path) {
-    if (path == nullptr || path[0] == L'\\0') {
+    if (path == nullptr || path[0] == L'\0') {
         return std::nullopt;
     }
 
@@ -341,7 +341,7 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
     }
 
     std::wstring normalized{path};
-    std::replace(normalized.begin(), normalized.end(), L'\\\\', L'/');
+    std::replace(normalized.begin(), normalized.end(), L'\\', L'/');
 
     // Normalize common RE Engine / Windows forms. In particular, discard a
     // Wine/Windows absolute prefix when the virtual resource contains natives/.
@@ -353,7 +353,7 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
     if (natives_pos != std::wstring::npos) {
         normalized.erase(0, natives_pos);
     } else {
-        while (!normalized.empty() && (normalized.front() == L'/' || normalized.front() == L'\\\\')) {
+        while (!normalized.empty() && (normalized.front() == L'/' || normalized.front() == L'\\')) {
             normalized.erase(normalized.begin());
         }
     }
