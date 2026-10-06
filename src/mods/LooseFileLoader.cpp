@@ -331,29 +331,42 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
         return std::nullopt;
     }
 
-    const std::filesystem::path direct{path};
-    try {
-        if (std::filesystem::exists(direct)) {
-            return direct;
+    auto lower_ascii = [](std::wstring value) {
+        for (auto& c : value) {
+            if (c >= L'A' && c <= L'Z') {
+                c = static_cast<wchar_t>(c - L'A' + L'a');
+            }
         }
-    } catch (...) {
-        // Try normalized game-relative forms below.
+        return value;
+    };
+
+    const auto exists_path = [](const std::filesystem::path& candidate) -> bool {
+        try {
+            return std::filesystem::exists(candidate);
+        } catch (...) {
+            return false;
+        }
+    };
+
+    const std::filesystem::path direct{path};
+    if (exists_path(direct)) {
+        return direct;
     }
 
     std::wstring normalized{path};
-    std::replace(normalized.begin(), normalized.end(), L'\\', L'/');
+    std::replace(normalized.begin(), normalized.end(), L'\', L'/');
 
-    // Normalize common RE Engine / Windows forms. In particular, discard a
-    // Wine/Windows absolute prefix when the virtual resource contains natives/.
     while (normalized.rfind(L"./", 0) == 0) {
         normalized.erase(0, 2);
     }
 
-    const auto natives_pos = normalized.find(L"natives/");
+    const auto lowered = lower_ascii(normalized);
+    const auto natives_pos = lowered.find(L"natives/");
+
     if (natives_pos != std::wstring::npos) {
         normalized.erase(0, natives_pos);
     } else {
-        while (!normalized.empty() && (normalized.front() == L'/' || normalized.front() == L'\\')) {
+        while (!normalized.empty() && normalized.front() == L'/') {
             normalized.erase(normalized.begin());
         }
     }
@@ -362,24 +375,42 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
         return std::nullopt;
     }
 
-    const auto game_dir = REFramework::get_persistent_dir();
-    const auto candidate = game_dir / std::filesystem::path{normalized};
+    const auto normalized_path = std::filesystem::path{normalized};
 
-    try {
-        if (std::filesystem::exists(candidate)) {
-            return candidate;
-        }
-    } catch (...) {
+    // CrossOver/Wine may make REFramework::get_persistent_dir() fall back to
+    // %APPDATA%\REFramework\<exe>. That is not the game install directory.
+    // Loose files installed by Fluffy are beside the game executable, so probe
+    // the actual executable directory first.
+    std::vector<std::filesystem::path> roots;
+
+    if (const auto module_path = utility::get_module_path(utility::get_executable())) {
+        roots.push_back(std::filesystem::path{*module_path}.parent_path());
     }
 
-    // Some callers omit the natives/ prefix.
-    if (natives_pos == std::wstring::npos) {
-        const auto natives_candidate = game_dir / "natives" / std::filesystem::path{normalized};
-        try {
-            if (std::filesystem::exists(natives_candidate)) {
+    // Keep REFramework's persistent directory as a secondary compatibility
+    // root for installations which intentionally place loose files there.
+    roots.push_back(REFramework::get_persistent_dir());
+
+    for (const auto& root : roots) {
+        if (root.empty()) {
+            continue;
+        }
+
+        const auto candidate = root / normalized_path;
+        if (exists_path(candidate)) {
+            spdlog::info("[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                utility::narrow(path), candidate.string());
+            return candidate;
+        }
+
+        // Some callers omit the natives/ prefix.
+        if (natives_pos == std::wstring::npos) {
+            const auto natives_candidate = root / "natives" / normalized_path;
+            if (exists_path(natives_candidate)) {
+                spdlog::info("[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                    utility::narrow(path), natives_candidate.string());
                 return natives_candidate;
             }
-        } catch (...) {
         }
     }
 
