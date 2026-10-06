@@ -354,7 +354,7 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
     }
 
     std::wstring normalized{path};
-    std::replace(normalized.begin(), normalized.end(), L'\', L'/');
+    std::replace(normalized.begin(), normalized.end(), L'\\', L'/');
 
     while (normalized.rfind(L"./", 0) == 0) {
         normalized.erase(0, 2);
