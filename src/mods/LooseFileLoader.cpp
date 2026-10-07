@@ -755,7 +755,7 @@ void LooseFileLoader::early_initialize() {
         hook();
 
         try {
-            const game_root = get_win32_game_root();
+            const auto game_root = get_win32_game_root();
 
             DWORD current_dir_capacity = GetCurrentDirectoryW(0, nullptr);
             std::wstring current_dir;
