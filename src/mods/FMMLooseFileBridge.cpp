@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -575,7 +576,7 @@ static std::optional<Source> find_source_for_owner(const std::string& owner) {
 }
 
 static int find_zip_member(mz_zip_archive* zip, const std::string& requested_relative) {
-    const auto file_count = mz_zip_get_num_files(zip);
+    const auto file_count = mz_zip_reader_get_num_files(zip);
 
     for (mz_uint i = 0; i < file_count; ++i) {
         if (mz_zip_reader_is_file_a_directory(zip, i)) {
