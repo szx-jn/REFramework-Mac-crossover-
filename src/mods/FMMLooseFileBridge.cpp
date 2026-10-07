@@ -40,6 +40,7 @@ struct State {
     fs::path fluffy_root{};
     std::unordered_map<std::string, std::string> owner_by_file{};
     std::unordered_map<std::string, Source> source_by_owner{};
+    std::unordered_map<std::string, std::vector<Source>> source_by_file{};
     std::unordered_set<std::string> failed_requests{};
     size_t request_logs{0};
 };
@@ -445,6 +446,109 @@ static std::string source_key(const std::string& value) {
     return lowercase_ascii(trim(value));
 }
 
+static void add_source_file(
+    const std::string& relative,
+    const Source& source
+) {
+    if (relative.empty()) {
+        return;
+    }
+
+    auto& candidates = g_state.source_by_file[relative];
+
+    const auto duplicate = std::find_if(
+        candidates.begin(),
+        candidates.end(),
+        [&](const Source& existing) {
+            return existing.kind == source.kind && existing.path == source.path;
+        }
+    );
+
+    if (duplicate == candidates.end()) {
+        candidates.push_back(source);
+    }
+}
+
+static void index_directory_source(const Source& source) {
+    std::error_code ec;
+
+    if (!fs::is_directory(source.path, ec)) {
+        return;
+    }
+
+    for (const auto& entry : fs::recursive_directory_iterator(source.path, ec)) {
+        if (ec) {
+            break;
+        }
+
+        if (!entry.is_regular_file(ec)) {
+            ec.clear();
+            continue;
+        }
+
+        const auto relative = normalize_native_relative(
+            entry.path().lexically_relative(source.path).generic_string()
+        );
+
+        if (!relative.empty()) {
+            add_source_file(relative, source);
+        }
+
+        ec.clear();
+    }
+}
+
+static void index_zip_source(const Source& source) {
+    mz_zip_archive zip{};
+    const auto zip_filename = source.path.string();
+
+    if (!mz_zip_reader_init_file(&zip, zip_filename.c_str(), 0)) {
+        spdlog::warn(
+            "[LooseFileLoader][FMM] Failed to index ZIP source: {}",
+            source.path.string()
+        );
+        return;
+    }
+
+    const auto file_count = mz_zip_reader_get_num_files(&zip);
+
+    for (mz_uint i = 0; i < file_count; ++i) {
+        if (mz_zip_reader_is_file_a_directory(&zip, i)) {
+            continue;
+        }
+
+        std::string entry_name;
+
+        if (!read_zip_entry_name(&zip, i, entry_name)) {
+            continue;
+        }
+
+        const auto relative = normalize_native_relative(entry_name);
+
+        if (!relative.empty()) {
+            add_source_file(relative, source);
+        }
+    }
+
+    mz_zip_reader_end(&zip);
+}
+
+static void index_source_files(const Source& source) {
+    switch (source.kind) {
+    case SourceKind::Directory:
+        index_directory_source(source);
+        break;
+
+    case SourceKind::Zip:
+        index_zip_source(source);
+        break;
+
+    case SourceKind::Unsupported:
+        break;
+    }
+}
+
+
 static void add_source_alias(
     const std::string& owner,
     const Source& source
@@ -454,6 +558,8 @@ static void add_source_alias(
     }
 
     g_state.source_by_owner[source_key(owner)] = source;
+
+    index_source_files(source);
 
     const auto compact = compact_name(owner);
 
@@ -547,6 +653,45 @@ static std::optional<Source> find_source_for_owner(const std::string& owner) {
     }
 
     return std::nullopt;
+}
+
+static std::optional<Source> find_source_for_file(
+    const std::string& relative,
+    const std::string& owner
+) {
+    const auto it = g_state.source_by_file.find(relative);
+
+    if (it == g_state.source_by_file.end() || it->second.empty()) {
+        return std::nullopt;
+    }
+
+    if (it->second.size() == 1) {
+        return it->second.front();
+    }
+
+    if (const auto owner_source = find_source_for_owner(owner)) {
+        const auto match = std::find_if(
+            it->second.begin(),
+            it->second.end(),
+            [&](const Source& candidate) {
+                return candidate.kind == owner_source->kind &&
+                       candidate.path == owner_source->path;
+            }
+        );
+
+        if (match != it->second.end()) {
+            return *match;
+        }
+    }
+
+    spdlog::warn(
+        "[LooseFileLoader][FMM] Multiple source archives/folders contain {} for owner={}; using first candidate: {}",
+        relative,
+        owner,
+        it->second.front().path.string()
+    );
+
+    return it->second.front();
 }
 
 static int find_zip_member(mz_zip_archive* zip, const std::string& requested_relative) {
@@ -775,7 +920,20 @@ bool ensure_file(const wchar_t* path) {
         return false;
     }
 
-    const auto source = find_source_for_owner(owner_it->second);
+    auto source = find_source_for_owner(owner_it->second);
+
+    if (!source) {
+        source = find_source_for_file(relative, owner_it->second);
+
+        if (source) {
+            spdlog::info(
+                "[LooseFileLoader][FMM] Resolved source by native path despite owner-name mismatch: owner={} file={} source={}",
+                owner_it->second,
+                relative,
+                source->path.string()
+            );
+        }
+    }
 
     if (!source) {
         spdlog::warn(
