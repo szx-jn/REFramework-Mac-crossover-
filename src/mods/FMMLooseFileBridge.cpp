@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -175,6 +176,9 @@ static bool read_zip_entry_name(mz_zip_archive* zip, mz_uint index, std::string&
 
     if (required < sizeof(stack_buffer)) {
         name_out.assign(stack_buffer, required);
+        if (!name_out.empty() && name_out.back() == '\0') {
+            name_out.pop_back();
+        }
         return true;
     }
 
@@ -193,6 +197,9 @@ static bool read_zip_entry_name(mz_zip_archive* zip, mz_uint index, std::string&
     }
 
     dynamic_buffer.resize(written);
+    if (!dynamic_buffer.empty() && dynamic_buffer.back() == '\0') {
+        dynamic_buffer.pop_back();
+    }
     name_out = std::move(dynamic_buffer);
     return true;
 }
@@ -611,7 +618,7 @@ static bool copy_from_directory(
         relative_path.begin(),
         relative_path.end(),
         '/',
-        fs::path::preferred_separator
+        '\\'
     );
 
     const auto source_path = source.path / fs::path{relative_path};
