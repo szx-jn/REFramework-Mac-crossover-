@@ -4,6 +4,7 @@
 #include <cctype>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,7 +39,7 @@ struct State {
     std::unordered_map<std::string, std::string> owner_by_file{};
     std::unordered_map<std::string, Source> source_by_owner{};
     std::unordered_set<std::string> failed_requests{};
-    uint32_t request_logs{0};
+    size_t request_logs{0};
 };
 
 State g_state{};
@@ -96,7 +97,7 @@ static bool contains_ascii_case_insensitive(std::wstring value, std::wstring_vie
 
 static std::string normalize_native_relative(std::string value) {
     value = lowercase_ascii(std::move(value));
-    std::replace(value.begin(), value.end(), '\', '/');
+    std::replace(value.begin(), value.end(), '\\', '/');
 
     while (value.rfind("./", 0) == 0) {
         value.erase(0, 2);
@@ -217,7 +218,7 @@ static bool read_modinfo_name_from_zip(const fs::path& zip_path, std::string& na
         }
 
         auto lowered = lowercase_ascii(entry_name);
-        std::replace(lowered.begin(), lowered.end(), '\', '/');
+        std::replace(lowered.begin(), lowered.end(), '\\', '/');
 
         const auto slash = lowered.find_last_of('/');
         const auto basename = slash == std::string::npos
@@ -605,14 +606,15 @@ static bool copy_from_directory(
     const std::string& requested_relative,
     const fs::path& destination
 ) {
+    auto relative_path = requested_relative;
     std::replace(
-        requested_relative.begin(),
-        requested_relative.end(),
+        relative_path.begin(),
+        relative_path.end(),
         '/',
         fs::path::preferred_separator
     );
 
-    const auto source_path = source.path / fs::path{requested_relative};
+    const auto source_path = source.path / fs::path{relative_path};
 
     std::error_code ec;
 
