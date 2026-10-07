@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <spdlog/spdlog.h>
+#include "third_party/miniz/miniz_tinfl.h"
 #include "third_party/miniz/miniz_zip.h"
 
 namespace fs = std::filesystem;
@@ -247,7 +248,7 @@ static bool read_modinfo_name_from_zip(const fs::path& zip_path, std::string& na
             static_cast<const char*>(data),
             static_cast<const char*>(data) + size
         );
-        mz_free(data);
+        MZ_FREE(data);
 
         if (parse_modinfo_name_text(text, name_out)) {
             mz_zip_reader_end(&zip);
