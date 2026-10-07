@@ -212,7 +212,7 @@ static bool read_modinfo_name_from_zip(const fs::path& zip_path, std::string& na
         return false;
     }
 
-    const auto file_count = mz_zip_get_num_files(&zip);
+    const auto file_count = mz_zip_reader_get_num_files(&zip);
 
     for (mz_uint i = 0; i < file_count; ++i) {
         if (mz_zip_reader_is_file_a_directory(&zip, i)) {
@@ -352,12 +352,13 @@ static std::optional<fs::path> locate_fluffy_root(const fs::path& game_root) {
 
     const auto user = get_current_windows_user();
 
+    const std::vector<std::wstring> relative_parents{
+        L"Downloads",
+        L"Desktop",
+        L"Documents",
+    };
+
     if (!user.empty()) {
-        const std::vector<std::wstring> relative_parents{
-            L"Downloads",
-            L"Desktop",
-            L"Documents",
-        };
 
         for (const auto& parent_name : relative_parents) {
             const fs::path parent = fs::path{L"Z:\\Users"} / user / parent_name;
@@ -401,7 +402,7 @@ static std::optional<fs::path> locate_fluffy_root(const fs::path& game_root) {
         }
     }
 
-    append_matching_children(candidates, fs::path{L"C:\"});
+    append_matching_children(candidates, fs::path{L"C:\\"});
 
     if (!game_root.empty()) {
         append_existing_root(candidates, game_root.parent_path());
