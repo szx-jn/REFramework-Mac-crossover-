@@ -369,6 +369,38 @@ static std::optional<fs::path> locate_fluffy_root(const fs::path& game_root) {
         append_matching_children(candidates, user_root);
     }
 
+    // CrossOver's Windows account name is not necessarily the macOS account
+    // name. Enumerate one level of Z:\Users so the bridge can discover the
+    // host user's Downloads/Desktop/Documents regardless of the bottle user.
+    {
+        const fs::path z_users{L"Z:\\Users"};
+        std::error_code ec;
+
+        if (fs::is_directory(z_users, ec)) {
+            for (const auto& user_entry : fs::directory_iterator(z_users, ec)) {
+                if (ec) {
+                    break;
+                }
+
+                if (!user_entry.is_directory(ec)) {
+                    ec.clear();
+                    continue;
+                }
+
+                const auto host_user_root = user_entry.path();
+
+                for (const auto& parent_name : relative_parents) {
+                    const auto parent = host_user_root / parent_name;
+                    append_existing_root(candidates, parent);
+                    append_matching_children(candidates, parent);
+                }
+
+                append_matching_children(candidates, host_user_root);
+                ec.clear();
+            }
+        }
+    }
+
     append_matching_children(candidates, fs::path{L"C:\"});
 
     if (!game_root.empty()) {
@@ -696,9 +728,15 @@ bool ensure_file(const wchar_t* path) {
         return false;
     }
 
-    const fs::path target{path};
+    fs::path target{path};
 
     std::error_code ec;
+
+    if (!target.is_absolute()) {
+        if (const auto game_root = get_game_root()) {
+            target = *game_root / target;
+        }
+    }
 
     if (fs::is_regular_file(target, ec)) {
         return true;
