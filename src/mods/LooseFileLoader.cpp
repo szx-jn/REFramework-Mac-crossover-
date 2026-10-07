@@ -2,11 +2,16 @@
 #include <sdk/RETypeDB.hpp>
 #include <utility/Scan.hpp>
 #include <utility/Module.hpp>
+
+#include <algorithm>
+#include <atomic>
+#include <windows.h>
 #include "REFramework.hpp"
 
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include "LooseFileLoader.hpp"
+#include "FMMLooseFileBridge.hpp"
 
 LooseFileLoader* g_loose_file_loader{nullptr};
 
@@ -89,6 +94,9 @@ void LooseFileLoader::on_draw_ui() {
     if (m_hook_success) {
         ImGui::TextWrapped("Files encountered: %d", m_files_encountered);
         ImGui::TextWrapped("Loose files loaded: %d", m_loose_files_loaded);
+        ImGui::TextWrapped("path_to_hash Hook calls: %llu", static_cast<unsigned long long>(m_path_hook_calls.load()));
+        ImGui::TextWrapped("path_to_hash original calls: %llu", static_cast<unsigned long long>(m_path_hook_original_calls.load()));
+        ImGui::TextWrapped("path_to_hash loose hits: %llu", static_cast<unsigned long long>(m_path_hook_loose_hits.load()));
 
         if (ImGui::Button("Clear stats")) {
             m_files_encountered = 0;
@@ -324,8 +332,179 @@ void LooseFileLoader::hook() {
 
 static thread_local std::chrono::steady_clock::time_point g_last_time_logged_safe_exists{};
 
+static std::wstring normalize_win32_path(std::wstring value) {
+    std::replace(value.begin(), value.end(), L'/', L'\\');
+
+    while (value.rfind(L".\\", 0) == 0) {
+        value.erase(0, 2);
+    }
+
+    return value;
+}
+
+static std::wstring lowercase_ascii(std::wstring value) {
+    for (auto& c : value) {
+        if (c >= L'A' && c <= L'Z') {
+            c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
+    }
+    return value;
+}
+
+static bool win32_path_exists(const std::wstring& path) {
+    if (path.empty()) {
+        return false;
+    }
+
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+static std::optional<std::wstring> get_win32_game_root() {
+    std::wstring buffer(32768, L'\0');
+    const auto len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+
+    if (len == 0 || len >= buffer.size()) {
+        return std::nullopt;
+    }
+
+    buffer.resize(len);
+
+    const auto separator = buffer.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) {
+        return std::nullopt;
+    }
+
+    buffer.resize(separator);
+    return buffer;
+}
+
+static std::optional<std::filesystem::path> resolve_crossover_loose_path(const wchar_t* path) {
+    if (path == nullptr || path[0] == L'\0') {
+        return std::nullopt;
+    }
+
+    const auto normalized = normalize_win32_path(std::wstring{path});
+    const auto lowered = lowercase_ascii(normalized);
+    const auto natives_pos = lowered.find(L"natives\\");
+    const auto game_root = get_win32_game_root();
+
+    if (game_root) {
+        std::wstring relative;
+
+        if (natives_pos != std::wstring::npos) {
+            relative = normalized.substr(natives_pos);
+        } else {
+            relative = normalized;
+
+            while (!relative.empty() && relative.front() == L'\\') {
+                relative.erase(relative.begin());
+            }
+
+            if (lowercase_ascii(relative).rfind(L"natives\\", 0) != 0) {
+                relative = L"natives\\" + relative;
+            }
+        }
+
+        const auto candidate = *game_root + L"\\" + relative;
+        if (win32_path_exists(candidate)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver Win32 loose file resolved: {} -> {}",
+                utility::narrow(path),
+                utility::narrow(candidate.c_str())
+            );
+            return std::filesystem::path{candidate};
+        }
+
+        const auto game_root_normalized = normalize_win32_path(*game_root);
+        const auto normalized_lowered = lowercase_ascii(normalized);
+        const auto game_root_lowered = lowercase_ascii(game_root_normalized + L"\\");
+
+        if (normalized_lowered.rfind(game_root_lowered, 0) == 0 &&
+            win32_path_exists(normalized)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver Win32 direct loose file resolved: {} -> {}",
+                utility::narrow(path),
+                utility::narrow(normalized.c_str())
+            );
+            return std::filesystem::path{normalized};
+        }
+    }
+
+    // Secondary fallback for non-CrossOver layouts and persistent-dir installs.
+    std::vector<std::filesystem::path> roots;
+
+    if (const auto module_path = utility::get_module_path(utility::get_executable())) {
+        roots.push_back(std::filesystem::path{*module_path}.parent_path());
+    }
+
+    roots.push_back(REFramework::get_persistent_dir());
+
+    for (const auto& root : roots) {
+        if (root.empty()) {
+            continue;
+        }
+
+        const auto candidate = root / std::filesystem::path{normalized};
+        if (std::filesystem::exists(candidate)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                utility::narrow(path),
+                candidate.string()
+            );
+            return candidate;
+        }
+
+        if (natives_pos == std::wstring::npos) {
+            const auto natives_candidate = root / "natives" / std::filesystem::path{normalized};
+            if (std::filesystem::exists(natives_candidate)) {
+                spdlog::info(
+                    "[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                    utility::narrow(path),
+                    natives_candidate.string()
+                );
+                return natives_candidate;
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
 bool safe_exists(const wchar_t* path) try {
-    return std::filesystem::exists(path);
+    if (path == nullptr || path[0] == L'\0') {
+        return false;
+    }
+
+    // Canonicalize separators before calling Win32. The previous CrossOver
+    // path was C:\RE9/natives/...; forcing backslashes avoids a Wine path
+    // parser mismatch where GetFileAttributesW returned ERROR_PATH_NOT_FOUND.
+    const auto normalized = normalize_win32_path(std::wstring{path});
+
+    if (win32_path_exists(normalized)) {
+        return true;
+    }
+
+    if (fmm_loose_file_bridge::ensure_file(normalized.c_str())) {
+        return true;
+    }
+
+    if (resolve_crossover_loose_path(normalized.c_str()).has_value()) {
+        return true;
+    }
+
+    const auto last_error = GetLastError();
+
+    if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] file not found path={} normalized={} win32_error={}",
+            utility::narrow(path),
+            utility::narrow(normalized.c_str()),
+            static_cast<unsigned long>(last_error)
+        );
+        g_last_time_logged_safe_exists = std::chrono::steady_clock::now();
+    }
+
+    return false;
 } catch (const std::filesystem::filesystem_error& e) {
     if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
         spdlog::error("[LooseFileLoader] Filesystem error in safe_exists: {}", e.what());
@@ -367,7 +546,22 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
 
     const auto enabled = m_enabled->value();
 
-    //spdlog::info("[LooseFileLoader] path_to_hash_hook called with path: {}", utility::narrow(path));
+    if (m_path_hook_calls.load(std::memory_order_relaxed) <= 64) {
+        if (path != nullptr && path[0] != L'\0') {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] handle_path path={} hash=0x{:016X} enabled={}",
+                utility::narrow(path),
+                static_cast<uint64_t>(hash),
+                enabled ? 1 : 0
+            );
+        } else {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] handle_path path=<null-or-empty> hash=0x{:016X} enabled={}",
+                static_cast<uint64_t>(hash),
+                enabled ? 1 : 0
+            );
+        }
+    }
 
     if (enabled) {
         bool exists_in_cache{false};
@@ -436,21 +630,97 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
 }
 
 uint64_t LooseFileLoader::path_to_hash_hook(const wchar_t* path) {
-    const auto og = g_loose_file_loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook)>();
-    const auto result = og(path);
+    auto* loader = g_loose_file_loader;
+    if (loader == nullptr) {
+        return 0;
+    }
 
-    if (g_loose_file_loader->handle_path(path, result)) {
+    const auto call_no = loader->m_path_hook_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool diagnostic_log = call_no <= 64;
+
+    if (diagnostic_log) {
+        if (path != nullptr && path[0] != L'\0') {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] path_to_hash ENTER #{} enabled={} path={}",
+                call_no,
+                loader->m_enabled->value() ? 1 : 0,
+                utility::narrow(path)
+            );
+        } else {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] path_to_hash ENTER #{} enabled={} path=<null-or-empty>",
+                call_no,
+                loader->m_enabled->value() ? 1 : 0
+            );
+        }
+    }
+
+    const auto og = loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook)>();
+    const auto result = og(path);
+    loader->m_path_hook_original_calls.fetch_add(1, std::memory_order_relaxed);
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] path_to_hash ORIGINAL_RETURN #{} hash=0x{:016X}",
+            call_no,
+            static_cast<uint64_t>(result)
+        );
+    }
+
+    const auto loose = loader->handle_path(path, result);
+
+    if (loose) {
+        const auto loose_no = loader->m_path_hook_loose_hits.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        if (diagnostic_log) {
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] LOOSE_HIT #{} call={} path={}",
+                loose_no,
+                call_no,
+                (path != nullptr && path[0] != L'\0') ? utility::narrow(path) : std::string{"<null-or-empty>"}
+            );
+        }
+
         return 4294967296;
+    }
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] path_to_hash EXIT #{} vanilla_path_kept=1",
+            call_no
+        );
     }
 
     return result;
 }
 
 uint64_t LooseFileLoader::path_to_hash_hook_legacy(void* This, const wchar_t* path) {
-    const auto og = g_loose_file_loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook_legacy)>();
-    const auto result = og(This, path);
+    auto* loader = g_loose_file_loader;
+    if (loader == nullptr) {
+        return 0;
+    }
 
-    if (g_loose_file_loader->handle_path(path, result)) {
+    const auto call_no = loader->m_path_hook_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool diagnostic_log = call_no <= 64;
+
+    if (diagnostic_log) {
+        spdlog::info(
+            "[LooseFileLoader][RE9-DIAG] legacy path_to_hash ENTER #{}",
+            call_no
+        );
+    }
+
+    const auto og = loader->m_path_to_hash_hook->get_original<decltype(path_to_hash_hook_legacy)>();
+    const auto result = og(This, path);
+    loader->m_path_hook_original_calls.fetch_add(1, std::memory_order_relaxed);
+
+    const auto loose = loader->handle_path(path, result);
+
+    if (loose) {
+        loader->m_path_hook_loose_hits.fetch_add(1, std::memory_order_relaxed);
+        if (diagnostic_log) {
+            spdlog::info("[LooseFileLoader][RE9-DIAG] legacy LOOSE_HIT #{}", call_no);
+        }
         return 0xFFFFFFFF;
     }
 
@@ -488,6 +758,72 @@ void LooseFileLoader::early_initialize() {
     // LooseTextureLoader only supports TDB >= 81 (MHWILDS+).
     if (sdk::GameIdentity::get().tdb_ver() >= 81) {
         hook();
+
+        try {
+            const auto game_root = get_win32_game_root();
+
+            DWORD current_dir_capacity = GetCurrentDirectoryW(0, nullptr);
+            std::wstring current_dir;
+            if (current_dir_capacity > 0) {
+                current_dir.resize(current_dir_capacity, L'\0');
+                const auto written = GetCurrentDirectoryW(
+                    current_dir_capacity,
+                    current_dir.data()
+                );
+                if (written > 0 && written < current_dir.size()) {
+                    current_dir.resize(written);
+                } else {
+                    current_dir.clear();
+                }
+            }
+
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] startup game_root={} current_dir={}",
+                game_root ? utility::narrow(game_root->c_str()) : std::string{"<unavailable>"},
+                current_dir.empty() ? std::string{"<unavailable>"} : utility::narrow(current_dir.c_str())
+            );
+
+            if (game_root) {
+                const auto natives_root = *game_root + L"\\natives";
+                const auto attrs = GetFileAttributesW(natives_root.c_str());
+
+                spdlog::info(
+                    "[LooseFileLoader][RE9-DIAG] natives root={} exists={} attrs={} win32_error={}",
+                    utility::narrow(natives_root.c_str()),
+                    attrs != INVALID_FILE_ATTRIBUTES ? 1 : 0,
+                    attrs == INVALID_FILE_ATTRIBUTES ? 0xFFFFFFFFu : attrs,
+                    attrs == INVALID_FILE_ATTRIBUTES
+                        ? static_cast<unsigned long>(GetLastError())
+                        : 0ul
+                );
+
+                const wchar_t* probes[] = {
+                    L"STM",
+                    L"STM\\Character",
+                    L"STM\\Animation"
+                };
+
+                for (size_t i = 0; i < 3; ++i) {
+                    const auto probe_path = natives_root + L"\\" + probes[i];
+                    const auto probe_attrs = GetFileAttributesW(probe_path.c_str());
+
+                    spdlog::info(
+                        "[LooseFileLoader][RE9-DIAG] native probe[{}]={} exists={} win32_error={}",
+                        i,
+                        utility::narrow(probe_path.c_str()),
+                        probe_attrs != INVALID_FILE_ATTRIBUTES ? 1 : 0,
+                        probe_attrs == INVALID_FILE_ATTRIBUTES
+                            ? static_cast<unsigned long>(GetLastError())
+                            : 0ul
+                    );
+                }
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[LooseFileLoader][RE9-DIAG] startup path inspection failed: {}", e.what());
+        } catch (...) {
+            spdlog::error("[LooseFileLoader][RE9-DIAG] startup path inspection failed: unknown exception");
+        }
+
         m_texture_loader.early_initialize();
     }
 }

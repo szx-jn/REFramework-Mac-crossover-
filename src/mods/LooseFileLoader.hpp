@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sdk/GameIdentity.hpp>
+#include <atomic>
 #include <deque>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
@@ -56,6 +57,11 @@ private:
     uint32_t m_uncached_hits{};
     uint32_t m_cache_hits{};
     uint32_t m_loose_files_loaded{};
+
+    // RE9/CrossOver diagnostics: prove whether the detour is actually executed.
+    std::atomic<uint64_t> m_path_hook_calls{0};
+    std::atomic<uint64_t> m_path_hook_original_calls{0};
+    std::atomic<uint64_t> m_path_hook_loose_hits{0};
 
     std::shared_mutex m_mutex{};
     std::deque<std::wstring> m_recent_accessed_files{}; // max 100

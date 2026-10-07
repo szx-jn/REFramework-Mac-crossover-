@@ -1471,6 +1471,8 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		"src/mods/IntegrityCheckBypass.hpp"
 		"src/mods/LooseFileLoader.cpp"
 		"src/mods/LooseFileLoader.hpp"
+		"src/mods/FMMLooseFileBridge.cpp"
+		"src/mods/FMMLooseFileBridge.hpp"
 		"src/mods/LooseTextureLoader.cpp"
 		"src/mods/LooseTextureLoader.hpp"
 		"src/mods/ManualFlashlight.cpp"
@@ -1537,6 +1539,12 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		"src/utility/ImGui.hpp"
 		"src/utility/PersistentTreeState.hpp"
 		"src/utility/SafeCallbackVector.hpp"
+		"src/third_party/miniz/miniz.h"
+		"src/third_party/miniz/miniz.c"
+		"src/third_party/miniz/miniz_tdef.c"
+		"src/third_party/miniz/miniz_tinfl.c"
+		"src/third_party/miniz/miniz_zip.h"
+		"src/third_party/miniz/miniz_zip.c"
 	)
 
 	add_library(REFramework SHARED)
