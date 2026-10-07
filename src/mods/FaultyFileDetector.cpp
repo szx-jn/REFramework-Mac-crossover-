@@ -1,5 +1,6 @@
 #include "FaultyFileDetector.hpp"
 #include "IntegrityCheckBypass.hpp"
+#include "LooseFileLoader.hpp"
 
 #include <sdk/GameIdentity.hpp>
 
@@ -429,6 +430,7 @@ void FaultyFileDetector::resource_parse_finish_hook(safetyhook::Context& ctx) {
             // Log parsed resource path for debugging
             // Get resource name
             std::wstring_view resource_path(resource->path);
+            LooseFileLoader::get()->quarantine_path(resource->path);
             try_add_to_faulty_list(resource_path, FaultyTier::Severe, FaultyReason::Invalid);
         }
     }
