@@ -530,6 +530,10 @@ bool LooseFileLoader::handle_path(const wchar_t* path, size_t hash) {
         return false;
     }
 
+    if (m_quarantined_paths.contains(std::wstring_view{path})) {
+        return false;
+    }
+
     ++m_files_encountered;
 
     if (m_show_recent_files) {
@@ -727,11 +731,19 @@ uint64_t LooseFileLoader::path_to_hash_hook_legacy(void* This, const wchar_t* pa
     return result;
 }
 
+void LooseFileLoader::quarantine_path(const wchar_t* path) {
+    if (path == nullptr || path[0] == L'\0') {
+        return;
+    }
+
+    m_quarantined_paths.add(std::wstring{path});
+    spdlog::info("[LooseFileLoader] Quarantined invalid loose resource: {}", utility::narrow(path));
+}
+
 bool LooseFileLoader::can_loosely_load_file(const wchar_t* path) {
     if (!m_enabled->value()) {
         return false;
     }
-
     if (path == nullptr || path[0] == L'\0') {
         return false;
     }

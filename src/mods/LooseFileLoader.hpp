@@ -10,6 +10,7 @@
 
 #include "../Mod.hpp"
 #include "LooseTextureLoader.hpp"
+#include "LooseFileQuarantine.hpp"
 
 class LooseFileLoader : public Mod {
 public:
@@ -34,6 +35,8 @@ public:
     }
 
     bool can_loosely_load_file(const wchar_t* path);
+
+    void quarantine_path(const wchar_t* path);
 
     LooseTextureLoader& get_texture_loader() { return m_texture_loader; }
 
@@ -68,6 +71,7 @@ private:
     std::deque<std::wstring> m_recent_loose_files{}; // max 100
     std::unordered_set<std::wstring> m_all_accessed_files{};
     std::unordered_set<std::wstring> m_all_loose_files{};
+    LooseFileQuarantine m_quarantined_paths{};
 
     std::unordered_set<size_t> m_files_on_disk{};
     std::unordered_set<size_t> m_seen_files{};

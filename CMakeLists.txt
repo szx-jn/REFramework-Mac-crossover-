@@ -1725,3 +1725,12 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	)
 
 endif()
+
+# Target: loose_file_quarantine_test
+add_executable(loose_file_quarantine_test
+	"tests/LooseFileQuarantineTest.cpp"
+)
+
+target_compile_features(loose_file_quarantine_test PRIVATE cxx_std_17)
+enable_testing()
+add_test(NAME LooseFileQuarantineTest COMMAND loose_file_quarantine_test)
