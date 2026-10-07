@@ -331,69 +331,111 @@ void LooseFileLoader::hook() {
 
 static thread_local std::chrono::steady_clock::time_point g_last_time_logged_safe_exists{};
 
+static std::wstring normalize_win32_path(std::wstring value) {
+    std::replace(value.begin(), value.end(), L'/', L'\\');
+
+    while (value.rfind(L".\\", 0) == 0) {
+        value.erase(0, 2);
+    }
+
+    return value;
+}
+
+static std::wstring lowercase_ascii(std::wstring value) {
+    for (auto& c : value) {
+        if (c >= L'A' && c <= L'Z') {
+            c = static_cast<wchar_t>(c - L'A' + L'a');
+        }
+    }
+    return value;
+}
+
+static bool win32_path_exists(const std::wstring& path) {
+    if (path.empty()) {
+        return false;
+    }
+
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+static std::optional<std::wstring> get_win32_game_root() {
+    std::wstring buffer(32768, L'\0');
+    const auto len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+
+    if (len == 0 || len >= buffer.size()) {
+        return std::nullopt;
+    }
+
+    buffer.resize(len);
+
+    const auto separator = buffer.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) {
+        return std::nullopt;
+    }
+
+    buffer.resize(separator);
+    return buffer;
+}
+
 static std::optional<std::filesystem::path> resolve_crossover_loose_path(const wchar_t* path) {
     if (path == nullptr || path[0] == L'\0') {
         return std::nullopt;
     }
 
-    auto lower_ascii = [](std::wstring value) {
-        for (auto& c : value) {
-            if (c >= L'A' && c <= L'Z') {
-                c = static_cast<wchar_t>(c - L'A' + L'a');
+    const auto normalized = normalize_win32_path(std::wstring{path});
+    const auto lowered = lowercase_ascii(normalized);
+    const auto natives_pos = lowered.find(L"natives\\");
+    const auto game_root = get_win32_game_root();
+
+    if (game_root) {
+        std::wstring relative;
+
+        if (natives_pos != std::wstring::npos) {
+            relative = normalized.substr(natives_pos);
+        } else {
+            relative = normalized;
+
+            while (!relative.empty() && relative.front() == L'\\') {
+                relative.erase(relative.begin());
+            }
+
+            if (lowercase_ascii(relative).rfind(L"natives\\", 0) != 0) {
+                relative = L"natives\\" + relative;
             }
         }
-        return value;
-    };
 
-    const auto exists_path = [](const std::filesystem::path& candidate) -> bool {
-        try {
-            return std::filesystem::exists(candidate);
-        } catch (...) {
-            return false;
+        const auto candidate = *game_root + L"\\" + relative;
+        if (win32_path_exists(candidate)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver Win32 loose file resolved: {} -> {}",
+                utility::narrow(path),
+                utility::narrow(candidate.c_str())
+            );
+            return std::filesystem::path{candidate};
         }
-    };
 
-    const std::filesystem::path direct{path};
-    if (exists_path(direct)) {
-        return direct;
-    }
+        const auto game_root_normalized = normalize_win32_path(*game_root);
+        const auto normalized_lowered = lowercase_ascii(normalized);
+        const auto game_root_lowered = lowercase_ascii(game_root_normalized + L"\\");
 
-    std::wstring normalized{path};
-    std::replace(normalized.begin(), normalized.end(), L'\\', L'/');
-
-    while (normalized.rfind(L"./", 0) == 0) {
-        normalized.erase(0, 2);
-    }
-
-    const auto lowered = lower_ascii(normalized);
-    const auto natives_pos = lowered.find(L"natives/");
-
-    if (natives_pos != std::wstring::npos) {
-        normalized.erase(0, natives_pos);
-    } else {
-        while (!normalized.empty() && normalized.front() == L'/') {
-            normalized.erase(normalized.begin());
+        if (normalized_lowered.rfind(game_root_lowered, 0) == 0 &&
+            win32_path_exists(normalized)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver Win32 direct loose file resolved: {} -> {}",
+                utility::narrow(path),
+                utility::narrow(normalized.c_str())
+            );
+            return std::filesystem::path{normalized};
         }
     }
 
-    if (normalized.empty()) {
-        return std::nullopt;
-    }
-
-    const auto normalized_path = std::filesystem::path{normalized};
-
-    // CrossOver/Wine may make REFramework::get_persistent_dir() fall back to
-    // %APPDATA%\REFramework\<exe>. That is not the game install directory.
-    // Loose files installed by Fluffy are beside the game executable, so probe
-    // the actual executable directory first.
+    // Secondary fallback for non-CrossOver layouts and persistent-dir installs.
     std::vector<std::filesystem::path> roots;
 
     if (const auto module_path = utility::get_module_path(utility::get_executable())) {
         roots.push_back(std::filesystem::path{*module_path}.parent_path());
     }
 
-    // Keep REFramework's persistent directory as a secondary compatibility
-    // root for installations which intentionally place loose files there.
     roots.push_back(REFramework::get_persistent_dir());
 
     for (const auto& root : roots) {
@@ -401,19 +443,24 @@ static std::optional<std::filesystem::path> resolve_crossover_loose_path(const w
             continue;
         }
 
-        const auto candidate = root / normalized_path;
-        if (exists_path(candidate)) {
-            spdlog::info("[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
-                utility::narrow(path), candidate.string());
+        const auto candidate = root / std::filesystem::path{normalized};
+        if (std::filesystem::exists(candidate)) {
+            spdlog::info(
+                "[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                utility::narrow(path),
+                candidate.string()
+            );
             return candidate;
         }
 
-        // Some callers omit the natives/ prefix.
         if (natives_pos == std::wstring::npos) {
-            const auto natives_candidate = root / "natives" / normalized_path;
-            if (exists_path(natives_candidate)) {
-                spdlog::info("[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
-                    utility::narrow(path), natives_candidate.string());
+            const auto natives_candidate = root / "natives" / std::filesystem::path{normalized};
+            if (std::filesystem::exists(natives_candidate)) {
+                spdlog::info(
+                    "[LooseFileLoader] CrossOver loose file resolved: {} -> {}",
+                    utility::narrow(path),
+                    natives_candidate.string()
+                );
                 return natives_candidate;
             }
         }
@@ -427,28 +474,31 @@ bool safe_exists(const wchar_t* path) try {
         return false;
     }
 
-    // Wine/CrossOver uses the Win32 file APIs as the canonical view of the
-    // bottle filesystem. Prefer GetFileAttributesW before std::filesystem so
-    // a valid C:\\RE9\\natives path is not rejected by a CRT/path adapter.
-    const auto attributes = GetFileAttributesW(path);
-    if (attributes != INVALID_FILE_ATTRIBUTES) {
+    // Canonicalize separators before calling Win32. The previous CrossOver
+    // path was C:\RE9/natives/...; forcing backslashes avoids a Wine path
+    // parser mismatch where GetFileAttributesW returned ERROR_PATH_NOT_FOUND.
+    const auto normalized = normalize_win32_path(std::wstring{path});
+
+    if (win32_path_exists(normalized)) {
+        return true;
+    }
+
+    if (resolve_crossover_loose_path(normalized.c_str()).has_value()) {
         return true;
     }
 
     const auto last_error = GetLastError();
 
-    if (resolve_crossover_loose_path(path).has_value()) {
-        return true;
-    }
-
     if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
         spdlog::info(
-            "[LooseFileLoader][RE9-DIAG] file not found path={} win32_error={}",
+            "[LooseFileLoader][RE9-DIAG] file not found path={} normalized={} win32_error={}",
             utility::narrow(path),
+            utility::narrow(normalized.c_str()),
             static_cast<unsigned long>(last_error)
         );
         g_last_time_logged_safe_exists = std::chrono::steady_clock::now();
     }
+
     return false;
 } catch (const std::filesystem::filesystem_error& e) {
     if (std::chrono::steady_clock::now() - g_last_time_logged_safe_exists > std::chrono::seconds(1)) {
@@ -704,55 +754,69 @@ void LooseFileLoader::early_initialize() {
     if (sdk::GameIdentity::get().tdb_ver() >= 81) {
         hook();
 
-        if (sdk::GameIdentity::get().is_re9()) {
-            try {
-                const auto module_path = utility::get_module_path(utility::get_executable());
-                if (module_path) {
-                    const auto game_root = std::filesystem::path{*module_path}.parent_path();
-                    const auto natives_root = game_root / "natives";
-                    std::error_code ec{};
-                    const bool natives_exists = std::filesystem::exists(natives_root, ec);
-                    spdlog::info(
-                        "[LooseFileLoader][RE9-DIAG] natives root={} exists={} ec={}",
-                        natives_root.string(),
-                        natives_exists ? 1 : 0,
-                        ec ? ec.message() : "none"
-                    );
+        try {
+            const game_root = get_win32_game_root();
 
-                    if (natives_exists && !ec) {
-                        size_t sample_count = 0;
-                        std::error_code iter_ec{};
-                        std::filesystem::recursive_directory_iterator it{
-                            natives_root,
-                            std::filesystem::directory_options::skip_permission_denied,
-                            iter_ec
-                        };
-                        const std::filesystem::recursive_directory_iterator end{};
-                        for (; it != end && sample_count < 16; it.increment(iter_ec)) {
-                            if (iter_ec) {
-                                iter_ec.clear();
-                                continue;
-                            }
-                            if (it->is_regular_file(iter_ec)) {
-                                spdlog::info(
-                                    "[LooseFileLoader][RE9-DIAG] native sample[{}]={}",
-                                    sample_count,
-                                    it->path().string()
-                                );
-                                ++sample_count;
-                            }
-                        }
-                        spdlog::info(
-                            "[LooseFileLoader][RE9-DIAG] native sample count={}",
-                            sample_count
-                        );
-                    }
+            DWORD current_dir_capacity = GetCurrentDirectoryW(0, nullptr);
+            std::wstring current_dir;
+            if (current_dir_capacity > 0) {
+                current_dir.resize(current_dir_capacity, L'\0');
+                const auto written = GetCurrentDirectoryW(
+                    current_dir_capacity,
+                    current_dir.data()
+                );
+                if (written > 0 && written < current_dir.size()) {
+                    current_dir.resize(written);
+                } else {
+                    current_dir.clear();
                 }
-            } catch (const std::exception& e) {
-                spdlog::error("[LooseFileLoader][RE9-DIAG] natives root inspection failed: {}", e.what());
-            } catch (...) {
-                spdlog::error("[LooseFileLoader][RE9-DIAG] natives root inspection failed: unknown exception");
             }
+
+            spdlog::info(
+                "[LooseFileLoader][RE9-DIAG] startup game_root={} current_dir={}",
+                game_root ? utility::narrow(game_root->c_str()) : std::string{"<unavailable>"},
+                current_dir.empty() ? std::string{"<unavailable>"} : utility::narrow(current_dir.c_str())
+            );
+
+            if (game_root) {
+                const auto natives_root = *game_root + L"\\natives";
+                const auto attrs = GetFileAttributesW(natives_root.c_str());
+
+                spdlog::info(
+                    "[LooseFileLoader][RE9-DIAG] natives root={} exists={} attrs={} win32_error={}",
+                    utility::narrow(natives_root.c_str()),
+                    attrs != INVALID_FILE_ATTRIBUTES ? 1 : 0,
+                    attrs == INVALID_FILE_ATTRIBUTES ? 0xFFFFFFFFu : attrs,
+                    attrs == INVALID_FILE_ATTRIBUTES
+                        ? static_cast<unsigned long>(GetLastError())
+                        : 0ul
+                );
+
+                const wchar_t* probes[] = {
+                    L"STM",
+                    L"STM\\Character",
+                    L"STM\\Animation"
+                };
+
+                for (size_t i = 0; i < 3; ++i) {
+                    const auto probe_path = natives_root + L"\\" + probes[i];
+                    const auto probe_attrs = GetFileAttributesW(probe_path.c_str());
+
+                    spdlog::info(
+                        "[LooseFileLoader][RE9-DIAG] native probe[{}]={} exists={} win32_error={}",
+                        i,
+                        utility::narrow(probe_path.c_str()),
+                        probe_attrs != INVALID_FILE_ATTRIBUTES ? 1 : 0,
+                        probe_attrs == INVALID_FILE_ATTRIBUTES
+                            ? static_cast<unsigned long>(GetLastError())
+                            : 0ul
+                    );
+                }
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[LooseFileLoader][RE9-DIAG] startup path inspection failed: {}", e.what());
+        } catch (...) {
+            spdlog::error("[LooseFileLoader][RE9-DIAG] startup path inspection failed: unknown exception");
         }
 
         m_texture_loader.early_initialize();
