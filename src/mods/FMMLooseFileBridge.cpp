@@ -285,17 +285,6 @@ static std::optional<fs::path> get_game_root() {
     return fs::path{buffer};
 }
 
-static std::wstring get_current_windows_user() {
-    wchar_t buffer[256]{};
-    DWORD size = static_cast<DWORD>(std::size(buffer));
-
-    if (GetUserNameW(buffer, &size) == 0 || size == 0) {
-        return {};
-    }
-
-    return std::wstring{buffer};
-}
-
 static void append_existing_root(std::vector<fs::path>& roots, const fs::path& root) {
     if (root.empty()) {
         return;
@@ -351,26 +340,7 @@ static std::optional<fs::path> locate_fluffy_root(const fs::path& game_root) {
     append_existing_root(candidates, fs::path{L"C:\\modmanager"});
     append_existing_root(candidates, fs::path{L"C:\\Fluffy Mod Manager"});
 
-    const auto user = get_current_windows_user();
-
-    const std::vector<std::wstring> relative_parents{
-        L"Downloads",
-        L"Desktop",
-        L"Documents",
-    };
-
-    if (!user.empty()) {
-
-        for (const auto& parent_name : relative_parents) {
-            const fs::path parent = fs::path{L"Z:\\Users"} / user / parent_name;
-            append_existing_root(candidates, parent);
-            append_matching_children(candidates, parent);
-        }
-
-        const fs::path user_root = fs::path{L"Z:\\Users"} / user;
-        append_matching_children(candidates, user_root);
-    }
-
+    // CrossOver's Windows account name is not necessarily the macOS account name.
     // CrossOver's Windows account name is not necessarily the macOS account
     // name. Enumerate one level of Z:\Users so the bridge can discover the
     // host user's Downloads/Desktop/Documents regardless of the bottle user.
