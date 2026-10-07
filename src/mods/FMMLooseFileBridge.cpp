@@ -337,12 +337,16 @@ static void append_matching_children(
 static std::optional<fs::path> locate_fluffy_root(const fs::path& game_root) {
     std::vector<fs::path> candidates{};
 
+    const std::vector<std::wstring> relative_parents{
+        L"Downloads",
+        L"Desktop",
+        L"Documents",
+    };
+
     append_existing_root(candidates, fs::path{L"C:\\modmanager"});
     append_existing_root(candidates, fs::path{L"C:\\Fluffy Mod Manager"});
 
-    // CrossOver's Windows account name is not necessarily the macOS account name.
-    // CrossOver's Windows account name is not necessarily the macOS account
-    // name. Enumerate one level of Z:\Users so the bridge can discover the
+    // Enumerate one level of Z:\Users so the bridge can discover the
     // host user's Downloads/Desktop/Documents regardless of the bottle user.
     {
         const fs::path z_users{L"Z:\\Users"};
