@@ -11,6 +11,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include "LooseFileLoader.hpp"
+#include "FMMLooseFileBridge.hpp"
 
 LooseFileLoader* g_loose_file_loader{nullptr};
 
@@ -480,6 +481,10 @@ bool safe_exists(const wchar_t* path) try {
     const auto normalized = normalize_win32_path(std::wstring{path});
 
     if (win32_path_exists(normalized)) {
+        return true;
+    }
+
+    if (fmm_loose_file_bridge::ensure_file(normalized.c_str())) {
         return true;
     }
 
