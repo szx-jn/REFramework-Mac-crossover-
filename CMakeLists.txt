@@ -1734,3 +1734,11 @@ add_executable(loose_file_quarantine_test
 target_compile_features(loose_file_quarantine_test PRIVATE cxx_std_17)
 enable_testing()
 add_test(NAME LooseFileQuarantineTest COMMAND loose_file_quarantine_test)
+
+# Target: re9_pe_header_pattern_test
+add_executable(re9_pe_header_pattern_test
+	"tests/Re9PeHeaderPatternTest.cpp"
+)
+
+target_compile_features(re9_pe_header_pattern_test PRIVATE cxx_std_17)
+add_test(NAME Re9PeHeaderPatternTest COMMAND re9_pe_header_pattern_test)

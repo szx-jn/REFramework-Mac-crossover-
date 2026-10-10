@@ -26,6 +26,7 @@
 
 #include "IntegrityCheckBypass.hpp"
 #include "DisasmUtils.hpp"
+#include "Re9PeHeaderPattern.hpp"
 
 struct IntegrityCheckPattern {
     std::string pat{};
@@ -2068,6 +2069,15 @@ void IntegrityCheckBypass::immediate_patch_re9() {
 
             return true;
         });
+
+        // The obfuscated RE9 build can hide the operand metadata from the
+        // linear decoder even though the runtime bytes still contain the
+        // complete PE-header check sequence.
+        if (!found &&
+            re9_pe_header_pattern::is_candidate(reinterpret_cast<const uint8_t*>(*ref), 0x100)) {
+            found = true;
+            spdlog::info("[IntegrityCheckBypass]: Accepted PE header candidate at 0x{:X} using RE9 runtime byte fallback.", *ref);
+        }
 
         if (found) {
             spdlog::info("[IntegrityCheckBypass]: Found PE header integrity check at 0x{:X}!", *ref);

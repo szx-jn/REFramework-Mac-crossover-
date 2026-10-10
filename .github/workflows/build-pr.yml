@@ -20,10 +20,11 @@ jobs:
       - name: Build
         run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target REFramework
 
-      - name: Build and run loose-file quarantine test
+      - name: Build and run startup regression tests
         run: |
           cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target loose_file_quarantine_test
-          ctest --test-dir ${{github.workspace}}/build -C ${{env.BUILD_TYPE}} -R LooseFileQuarantineTest --output-on-failure
+          cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target re9_pe_header_pattern_test
+          ctest --test-dir ${{github.workspace}}/build -C ${{env.BUILD_TYPE}} -R 'LooseFileQuarantineTest|Re9PeHeaderPatternTest' --output-on-failure
 
       - name: Upload artifacts
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1
