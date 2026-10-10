@@ -668,7 +668,7 @@ void FaultyFileDetector::early_init() {
         g_faulty_detector_instance = std::make_unique<FaultyFileDetector>();
     }
 
-    g_faulty_detector_instance->initialize_impl();
+    // Defer the detector scan until on_initialize(). Running it before the ThreadSuspender block can race with D3D12 startup under Wine/CrossOver.
 }
 
 std::shared_ptr<FaultyFileDetector>& FaultyFileDetector::get() {
