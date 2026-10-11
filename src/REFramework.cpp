@@ -587,7 +587,9 @@ REFramework::REFramework(HMODULE reframework_module)
 
         const bool has_faulty_file_detector = gi.tdb_ver() >= 81;
         if (has_faulty_file_detector) {
-            FaultyFileDetector::get(); // Initialize early
+            // The game can request startup resources before Mods::on_initialize runs.
+            // Install the detector hooks now, after ThreadSuspender has resumed.
+            FaultyFileDetector::get()->on_initialize();
         }
 
         const auto config_path = get_persistent_dir(REFrameworkConfig::REFRAMEWORK_CONFIG_NAME.data()).string();
